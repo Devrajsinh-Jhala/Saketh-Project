@@ -6,7 +6,7 @@ export const runtime = 'nodejs';
 export async function POST(req: Request) {
   try {
     let body: any = {};
-    try { body = await req.json(); } catch {}
+    try { body = await req.json(); } catch { }
     const title = typeof body?.title === 'string' ? body.title.trim() : '';
     if (!title) return NextResponse.json({ error: 'title is required' }, { status: 400 });
 
@@ -14,7 +14,7 @@ export async function POST(req: Request) {
     if (!key) return NextResponse.json({ error: 'GEMINI_API_KEY is not configured' }, { status: 500 });
 
     const genAI = new GoogleGenerativeAI(key);
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
 
     const prompt = [
       'Write a concise, well-structured blog post draft in Markdown.',
