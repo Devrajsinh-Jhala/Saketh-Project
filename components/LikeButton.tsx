@@ -12,14 +12,14 @@ export function LikeButton({ postId }: { postId: string }) {
     (async () => {
       const { count } = await supabase
         .from('reactions').select('*', { count: 'exact', head: true })
-        .eq('post_id', postId).eq('kind','like');
+        .eq('post_id', postId).eq('kind', 'like');
       if (active) setCount(count ?? 0);
 
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const { data } = await supabase.from('reactions')
           .select('post_id')
-          .eq('post_id', postId).eq('user_id', user.id).eq('kind','like')
+          .eq('post_id', postId).eq('user_id', user.id).eq('kind', 'like')
           .maybeSingle();
         if (active) setLiked(!!data);
       }
@@ -34,7 +34,7 @@ export function LikeButton({ postId }: { postId: string }) {
     start(async () => {
       if (liked) {
         await supabase.from('reactions')
-          .delete().eq('post_id', postId).eq('user_id', user.id).eq('kind','like');
+          .delete().eq('post_id', postId).eq('user_id', user.id).eq('kind', 'like');
         setLiked(false); setCount(c => c - 1);
       } else {
         await supabase.from('reactions').upsert(
