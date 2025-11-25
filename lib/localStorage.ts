@@ -12,12 +12,20 @@ const getStorageDir = () => {
     return path.join(os.homedir(), '.ai-blog', 'posts');
 };
 
-// Get the backup directory (can be changed to another drive/laptop path)
-const getBackupDir = () => {
-    // This can be configured to point to another laptop's shared folder
-    // For now, we'll use a backup folder in the user's home directory
-    return path.join(os.homedir(), '.ai-blog', 'backups');
+// Get list of potential cloud backup directories
+const getCloudBackupPaths = () => {
+    const home = os.homedir();
+    return [
+        'G:\\My Drive\\BlogBackups',           // Google Drive Desktop (Stream)
+        'G:\\BlogBackups',                     // Google Drive Root
+        path.join(home, 'Google Drive', 'BlogBackups'), // Google Drive (Mirror)
+        path.join(home, 'OneDrive', 'BlogBackups'),     // OneDrive
+        '\\\\ASHOK\\BlogBackups'               // Network Share (Fixed spelling)
+    ];
 };
+
+// Get the local fallback directory
+const getLocalBackupDir = () => path.join(os.homedir(), '.ai-blog', 'backups');
 
 /**
  * Ensure directory exists, create if it doesn't
@@ -25,8 +33,15 @@ const getBackupDir = () => {
 async function ensureDir(dirPath: string) {
     try {
         await fs.access(dirPath);
+        return true;
     } catch {
-        await fs.mkdir(dirPath, { recursive: true });
+        try {
+            await fs.mkdir(dirPath, { recursive: true });
+            return true;
+        } catch (error) {
+            // console.warn(`⚠️ Could not create directory ${dirPath}.`, error);
+            return false;
+        }
     }
 }
 
@@ -54,7 +69,7 @@ export async function savePostLocally(post: {
         await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
         console.log(`✅ Post saved locally: ${filePath}`);
 
-        // Also backup to backup directory
+        // Try backup to Cloud/Network
         await backupPost(post.slug, data);
 
         return { success: true, path: filePath };
@@ -65,20 +80,43 @@ export async function savePostLocally(post: {
 }
 
 /**
- * Backup a post to the backup directory
+ * Backup a post to the backup directory (Redundant Backup to ALL locations)
  */
 async function backupPost(slug: string, data: any) {
+    const cloudPaths = getCloudBackupPaths();
+    let primaryBackupPath = '';
+    let successCount = 0;
+
+    // 1. Try ALL Cloud/Network Paths
+    for (const cloudPath of cloudPaths) {
+        if (await ensureDir(cloudPath)) {
+            try {
+                const backupPath = path.join(cloudPath, `${slug}.json`);
+                await fs.writeFile(backupPath, JSON.stringify(data, null, 2), 'utf-8');
+                console.log(`☁️ Post backed up to: ${backupPath}`);
+
+                if (!primaryBackupPath) primaryBackupPath = backupPath;
+                successCount++;
+            } catch (err) {
+                continue;
+            }
+        }
+    }
+
+    if (successCount > 0) {
+        return { success: true, path: primaryBackupPath, type: 'cloud_redundant' };
+    }
+
+    // 2. Fallback to Local Backup (only if ALL cloud paths failed)
     try {
-        const backupDir = getBackupDir();
-        await ensureDir(backupDir);
-
-        const backupPath = path.join(backupDir, `${slug}.json`);
+        const localBackupDir = getLocalBackupDir();
+        await ensureDir(localBackupDir);
+        const backupPath = path.join(localBackupDir, `${slug}.json`);
         await fs.writeFile(backupPath, JSON.stringify(data, null, 2), 'utf-8');
-        console.log(`💾 Post backed up: ${backupPath}`);
-
-        return { success: true, path: backupPath };
+        console.log(`💾 Post backed up to LOCAL FALLBACK: ${backupPath}`);
+        return { success: true, path: backupPath, type: 'local_fallback' };
     } catch (error: any) {
-        console.error('⚠️ Failed to backup post:', error);
+        console.error('❌ All backups failed:', error);
         return { success: false, error: error.message };
     }
 }
@@ -130,10 +168,10 @@ export async function getAllLocalPosts() {
 export async function deletePostLocally(slug: string) {
     try {
         const storageDir = getStorageDir();
-        const backupDir = getBackupDir();
+        const cloudPaths = getCloudBackupPaths();
+        const localBackupDir = getLocalBackupDir();
 
         const filePath = path.join(storageDir, `${slug}.json`);
-        const backupPath = path.join(backupDir, `${slug}.json`);
 
         // Delete from local storage
         try {
@@ -143,12 +181,24 @@ export async function deletePostLocally(slug: string) {
             console.warn('File not found in local storage');
         }
 
-        // Delete from backup
+        // Try delete from Cloud Paths
+        for (const cloudPath of cloudPaths) {
+            try {
+                const cloudFilePath = path.join(cloudPath, `${slug}.json`);
+                await fs.unlink(cloudFilePath);
+                console.log(`🗑️ Post deleted from cloud: ${cloudFilePath}`);
+            } catch (error) {
+                // Ignore
+            }
+        }
+
+        // Try delete from Local Fallback Backup
         try {
-            await fs.unlink(backupPath);
-            console.log(`🗑️ Post deleted from backup: ${backupPath}`);
+            const localPath = path.join(localBackupDir, `${slug}.json`);
+            await fs.unlink(localPath);
+            console.log(`🗑️ Post deleted from local fallback backup: ${localPath}`);
         } catch (error) {
-            console.warn('File not found in backup');
+            // Ignore
         }
 
         return { success: true };
@@ -219,13 +269,39 @@ export async function syncFromRemote(remotePath?: string) {
 export async function getStorageStats() {
     try {
         const storageDir = getStorageDir();
-        const backupDir = getBackupDir();
+        const cloudPaths = getCloudBackupPaths();
+        const localBackupDir = getLocalBackupDir();
 
         await ensureDir(storageDir);
-        await ensureDir(backupDir);
+
+        let backupFiles: string[] = [];
+        let activeBackupPath = 'None';
+
+        // Try reading from Cloud Paths first
+        for (const cloudPath of cloudPaths) {
+            try {
+                if (await ensureDir(cloudPath)) {
+                    backupFiles = await fs.readdir(cloudPath);
+                    activeBackupPath = cloudPath;
+                    break; // Found working cloud path
+                }
+            } catch (e) {
+                continue;
+            }
+        }
+
+        // If no cloud path worked, try local fallback
+        if (activeBackupPath === 'None') {
+            try {
+                await ensureDir(localBackupDir);
+                backupFiles = await fs.readdir(localBackupDir);
+                activeBackupPath = localBackupDir;
+            } catch (err) {
+                console.warn('Could not access any backup directory');
+            }
+        }
 
         const localFiles = await fs.readdir(storageDir);
-        const backupFiles = await fs.readdir(backupDir);
 
         return {
             success: true,
@@ -233,7 +309,7 @@ export async function getStorageStats() {
                 localPosts: localFiles.filter(f => f.endsWith('.json')).length,
                 backupPosts: backupFiles.filter(f => f.endsWith('.json')).length,
                 storagePath: storageDir,
-                backupPath: backupDir,
+                backupPath: activeBackupPath,
             }
         };
     } catch (error: any) {
